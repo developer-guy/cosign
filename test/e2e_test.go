@@ -195,6 +195,8 @@ func TestAttestVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	mustErr(verifyAttestation.Exec(ctx, []string{imgName}), t)
+
 	// Success case
 	cuePolicy = `builder: id: "2"`
 	if err := ioutil.WriteFile(policyPath, []byte(cuePolicy), 0600); err != nil {
