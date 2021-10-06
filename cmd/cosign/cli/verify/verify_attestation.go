@@ -17,15 +17,19 @@ package verify
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"io"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/in-toto/in-toto-golang/in_toto"
 	"github.com/pkg/errors"
 
 	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
 	"github.com/sigstore/cosign/cmd/cosign/cli/options"
 	"github.com/sigstore/cosign/pkg/cosign"
+	"github.com/sigstore/cosign/pkg/cosign/cue"
 	"github.com/sigstore/cosign/pkg/cosign/pivkey"
 	sigs "github.com/sigstore/cosign/pkg/signature"
 	"github.com/sigstore/sigstore/pkg/signature"
@@ -36,13 +40,15 @@ import (
 // nolint
 type VerifyAttestationCommand struct {
 	options.RegistryOptions
-	CheckClaims bool
-	KeyRef      string
-	Sk          bool
-	Slot        string
-	Output      string
-	FulcioURL   string
-	RekorURL    string
+	CheckClaims   bool
+	KeyRef        string
+	Sk            bool
+	Slot          string
+	Output        string
+	FulcioURL     string
+	RekorURL      string
+	PredicateType string
+	Policies      []string
 }
 
 // DSSE messages contain the signature and payload in one object, but our interface expects a signature and payload
@@ -117,6 +123,69 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 			return err
 		}
 
+		for _, vp := range verified {
+			payload, err := vp.Payload()
+			if err != nil {
+				return err
+			}
+
+			var payloadData map[string]interface{}
+			if err := json.Unmarshal(payload, &payloadData); err != nil {
+				return err
+			}
+
+			if options.PredicateTypeMap[c.PredicateType] != payloadData["payloadType"] {
+				continue
+			}
+
+			decodedPayload, err := base64.StdEncoding.DecodeString(payloadData["payload"].(string))
+			if err != nil {
+				return err
+			}
+
+			switch c.PredicateType {
+			case options.PredicateCustom:
+				var cosignStatement in_toto.Statement
+				if err := json.Unmarshal(decodedPayload, &cosignStatement); err != nil {
+					return err
+				}
+				payload, _ := json.Marshal(cosignStatement.Predicate)
+				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
+					return err
+				}
+			case options.PredicateLink:
+				var linkStatement in_toto.LinkStatement
+				if err := json.Unmarshal(decodedPayload, &linkStatement); err != nil {
+					return err
+				}
+				payload, _ := json.Marshal(linkStatement.Predicate)
+				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
+					return err
+				}
+			case options.PredicateSLSA:
+				var slsaProvenanceStatement in_toto.ProvenanceStatement
+				if err := json.Unmarshal(decodedPayload, &slsaProvenanceStatement); err != nil {
+					return err
+				}
+				payload, _ := json.Marshal(slsaProvenanceStatement.Predicate)
+				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
+					return err
+				}
+			case options.PredicateSPDX:
+				var spdxStatement in_toto.SPDXStatement
+				if err := json.Unmarshal(decodedPayload, &spdxStatement); err != nil {
+					return err
+				}
+				payload, _ := json.Marshal(spdxStatement.Predicate)
+				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
+					return err
+				}
+			default:
+				continue
+			}
+		}
+
+		// TODO: add CUE validation report to `PrintVerificationHeader`.
 		PrintVerificationHeader(imageRef, co, bundleVerified)
 		// The attestations are always JSON, so use the raw "text" mode for outputting them instead of conversion
 		PrintVerification(imageRef, verified, "text")
