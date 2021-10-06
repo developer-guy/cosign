@@ -20,11 +20,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"flag"
-	"io"
-
+	"fmt"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/in-toto/in-toto-golang/in_toto"
 	"github.com/pkg/errors"
+	"github.com/sigstore/cosign/pkg/cosign/rego"
+	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
 	"github.com/sigstore/cosign/cmd/cosign/cli/options"
@@ -123,66 +126,122 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 			return err
 		}
 
+		var cuePolicies, regoPolicies []string
+
+		fmt.Println(c.Policies)
+
+		for _, policy := range c.Policies {
+			switch filepath.Ext(policy) {
+			case ".rego":
+				regoPolicies = append(regoPolicies, policy)
+			case ".cue":
+				cuePolicies = append(cuePolicies, policy)
+			default:
+				return errors.New("invalid policy format, expected .cue or .rego")
+			}
+		}
+
+		var validationErrors []error
 		for _, vp := range verified {
-			payload, err := vp.Payload()
-			if err != nil {
-				return err
-			}
-
 			var payloadData map[string]interface{}
-			if err := json.Unmarshal(payload, &payloadData); err != nil {
-				return err
-			}
 
-			if options.PredicateTypeMap[c.PredicateType] != payloadData["payloadType"] {
-				continue
-			}
-
-			decodedPayload, err := base64.StdEncoding.DecodeString(payloadData["payload"].(string))
+			p, err := vp.Payload()
 			if err != nil {
-				return err
+				return errors.Wrap(err, "could not get payload")
 			}
 
+			err = json.Unmarshal(p, &payloadData)
+			if err != nil {
+				return errors.Wrap(err, "unmarshal payload data")
+			}
+
+			predicateURI, ok := options.PredicateTypeMap[c.PredicateType]
+			if !ok {
+				return fmt.Errorf("invalid predicate type: %s", c.PredicateType)
+			}
+
+			// sanity checks
+			if val, ok := payloadData["payloadType"]; ok {
+				// we need to check only given type from the cli flag
+				// so we are skipping other types
+				if predicateURI != val {
+					continue
+				}
+			} else {
+				return fmt.Errorf("could not find 'payloadType' in payload data")
+			}
+
+			var decodedPayload []byte
+			if val, ok := payloadData["payload"]; ok {
+				decodedPayload, err = base64.StdEncoding.DecodeString(val.(string))
+				if err != nil {
+					return fmt.Errorf("could not decode 'payload': %w", err)
+				}
+			} else {
+				return fmt.Errorf("could not find 'payload' in payload data")
+			}
+
+			var payload []byte
 			switch c.PredicateType {
 			case options.PredicateCustom:
 				var cosignStatement in_toto.Statement
 				if err := json.Unmarshal(decodedPayload, &cosignStatement); err != nil {
-					return err
+					return fmt.Errorf("unmarshal CosignStatement: %w", err)
 				}
-				payload, _ := json.Marshal(cosignStatement.Predicate)
-				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
-					return err
+				payload, err = json.Marshal(cosignStatement.Predicate)
+				if err != nil {
+					return fmt.Errorf("error when generating CosignStatement: %w", err)
 				}
 			case options.PredicateLink:
 				var linkStatement in_toto.LinkStatement
 				if err := json.Unmarshal(decodedPayload, &linkStatement); err != nil {
-					return err
+					return fmt.Errorf("unmarshal LinkStatement: %w", err)
 				}
-				payload, _ := json.Marshal(linkStatement.Predicate)
-				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
-					return err
+				payload, err = json.Marshal(linkStatement.Predicate)
+				if err != nil {
+					return fmt.Errorf("error when generating LinkStatement: %w", err)
 				}
 			case options.PredicateSLSA:
 				var slsaProvenanceStatement in_toto.ProvenanceStatement
 				if err := json.Unmarshal(decodedPayload, &slsaProvenanceStatement); err != nil {
-					return err
+					return fmt.Errorf("unmarshal ProvenanceStatement: %w", err)
 				}
-				payload, _ := json.Marshal(slsaProvenanceStatement.Predicate)
-				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
-					return err
+				payload, err = json.Marshal(slsaProvenanceStatement.Predicate)
+				if err != nil {
+					return fmt.Errorf("error when generating ProvenanceStatement: %w", err)
 				}
 			case options.PredicateSPDX:
 				var spdxStatement in_toto.SPDXStatement
 				if err := json.Unmarshal(decodedPayload, &spdxStatement); err != nil {
-					return err
+					return fmt.Errorf("unmarshal SPDXStatement: %w", err)
 				}
-				payload, _ := json.Marshal(spdxStatement.Predicate)
-				if err := cue.ValidateJSON(payload, c.Policies); err != nil {
-					return err
+				payload, err = json.Marshal(spdxStatement.Predicate)
+				if err != nil {
+					return fmt.Errorf("error when generating SPDXStatement: %w", err)
 				}
-			default:
-				continue
 			}
+
+			if len(cuePolicies) > 0 {
+				fmt.Fprintf(os.Stderr, "will be validating againts CUE policies: %v\n", cuePolicies)
+				if err := cue.ValidateJSON(payload, cuePolicies); err != nil {
+					validationErrors = append(validationErrors, err)
+				}
+			}
+
+			if len(regoPolicies) > 0 {
+				fmt.Fprintf(os.Stderr, "will be validating againts Rego policies: %v\n", regoPolicies)
+				if err := rego.ValidateJSON(payload, regoPolicies); err != nil {
+					validationErrors = append(validationErrors, err)
+				}
+			}
+		}
+
+		if len(validationErrors) > 0 {
+			fmt.Fprintf(os.Stderr, "There are %d number of errors occurred during the validation:\n", len(validationErrors))
+			for _, v := range validationErrors {
+				_, _ = fmt.Fprintf(os.Stderr, "- %v\n", v)
+			}
+			return fmt.Errorf("%d validation errors occurred", len(validationErrors))
 		}
 
 		// TODO: add CUE validation report to `PrintVerificationHeader`.
