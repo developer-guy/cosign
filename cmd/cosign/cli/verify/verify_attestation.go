@@ -21,13 +21,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/in-toto/in-toto-golang/in_toto"
 	"github.com/pkg/errors"
 	"github.com/sigstore/cosign/pkg/cosign/rego"
-	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/sigstore/cosign/cmd/cosign/cli/fulcio"
 	"github.com/sigstore/cosign/cmd/cosign/cli/options"
@@ -222,14 +223,14 @@ func (c *VerifyAttestationCommand) Exec(ctx context.Context, images []string) (e
 			}
 
 			if len(cuePolicies) > 0 {
-				fmt.Fprintf(os.Stderr, "will be validating againts CUE policies: %v\n", cuePolicies)
+				fmt.Fprintf(os.Stderr, "will be validating against CUE policies: %v\n", cuePolicies)
 				if err := cue.ValidateJSON(payload, cuePolicies); err != nil {
 					validationErrors = append(validationErrors, err)
 				}
 			}
 
 			if len(regoPolicies) > 0 {
-				fmt.Fprintf(os.Stderr, "will be validating againts Rego policies: %v\n", regoPolicies)
+				fmt.Fprintf(os.Stderr, "will be validating against Rego policies: %v\n", regoPolicies)
 				if err := rego.ValidateJSON(payload, regoPolicies); err != nil {
 					validationErrors = append(validationErrors, err)
 				}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+
 	"github.com/open-policy-agent/opa/rego"
 	"github.com/pkg/errors"
 )
