@@ -16,6 +16,7 @@ package attach
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,13 +30,23 @@ import (
 	"github.com/sigstore/cosign/pkg/types"
 )
 
-func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, signedPayload, imageRef string) error {
+func AttachCmd(ctx context.Context, regOpts options.RegistryOptions, signedPayloads []string, imageRef string) error {
 	ociremoteOpts, err := regOpts.ClientOpts(ctx)
 	if err != nil {
 		return fmt.Errorf("constructing client options: %w", err)
 	}
 
-	fmt.Fprintln(os.Stderr, "Using payload from:", signedPayload)
+	for _, payload := range signedPayloads {
+		if err := attach(ociremoteOpts, payload, imageRef); err != nil {
+			return fmt.Errorf("attaching payload from %s: %w", payload, err)
+		}
+	}
+
+	return nil
+}
+
+func attach(remoteOpts []ociremote.Option, signedPayload, imageRef string) error {
+	fmt.Fprintf(os.Stderr, "Using payload from: %s", signedPayload)
 	payload, err := os.ReadFile(signedPayload)
 	if err != nil {
 		return err
@@ -44,6 +55,10 @@ func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, signed
 	if len(payload) == 0 {
 		return fmt.Errorf("%s payload is empty", signedPayload)
 	}
+
+	h := sha256.New()
+	h.Write(payload)
+	fmt.Fprintf(os.Stderr, " (%x)\n", h.Sum(nil))
 
 	env := ssldsse.Envelope{}
 	if err := json.Unmarshal(payload, &env); err != nil {
@@ -62,7 +77,7 @@ func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, signed
 	if err != nil {
 		return err
 	}
-	digest, err := ociremote.ResolveDigest(ref, ociremoteOpts...)
+	digest, err := ociremote.ResolveDigest(ref, remoteOpts...)
 	if err != nil {
 		return err
 	}
@@ -77,7 +92,7 @@ func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, signed
 		return err
 	}
 
-	se, err := ociremote.SignedEntity(digest, ociremoteOpts...)
+	se, err := ociremote.SignedEntity(digest, remoteOpts...)
 	if err != nil {
 		return err
 	}
@@ -88,5 +103,5 @@ func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, signed
 	}
 
 	// Publish the signatures associated with this entity
-	return ociremote.WriteAttestations(digest.Repository, newSE, ociremoteOpts...)
+	return ociremote.WriteAttestations(digest.Repository, newSE, remoteOpts...)
 }
