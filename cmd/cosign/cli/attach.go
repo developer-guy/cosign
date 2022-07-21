@@ -93,7 +93,7 @@ func attachAttestation() *cobra.Command {
 
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return attach.AttachCmd(cmd.Context(), o.Registry, o.Attestations, args[0])
+			return attach.AttestationCmd(cmd.Context(), o.Registry, o.Attestations, args[0])
 		},
 	}
 

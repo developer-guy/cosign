@@ -30,14 +30,14 @@ import (
 	"github.com/sigstore/cosign/pkg/types"
 )
 
-func AttachCmd(ctx context.Context, regOpts options.RegistryOptions, signedPayloads []string, imageRef string) error {
+func AttestationCmd(ctx context.Context, regOpts options.RegistryOptions, signedPayloads []string, imageRef string) error {
 	ociremoteOpts, err := regOpts.ClientOpts(ctx)
 	if err != nil {
 		return fmt.Errorf("constructing client options: %w", err)
 	}
 
 	for _, payload := range signedPayloads {
-		if err := attach(ociremoteOpts, payload, imageRef); err != nil {
+		if err := attachAttestation(ociremoteOpts, payload, imageRef); err != nil {
 			return fmt.Errorf("attaching payload from %s: %w", payload, err)
 		}
 	}
@@ -45,7 +45,7 @@ func AttachCmd(ctx context.Context, regOpts options.RegistryOptions, signedPaylo
 	return nil
 }
 
-func attach(remoteOpts []ociremote.Option, signedPayload, imageRef string) error {
+func attachAttestation(remoteOpts []ociremote.Option, signedPayload, imageRef string) error {
 	fmt.Fprintf(os.Stderr, "Using payload from: %s", signedPayload)
 	payload, err := os.ReadFile(signedPayload)
 	if err != nil {
